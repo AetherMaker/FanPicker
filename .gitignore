@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager
+/.build/
+/.swiftpm/
+/Packages/
+
+# Xcode
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM
+*.dSYM.zip
+
+# Local configuration and credentials
+.netrc
+.env
+.env.*
+!.env.example
+Secrets.xcconfig
+Local.xcconfig
+*.p12
+*.mobileprovision
+
+# Private reference demo
+/Example/FanPickerDemo/
