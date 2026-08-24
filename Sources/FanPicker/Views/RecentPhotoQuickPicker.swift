@@ -1,0 +1,419 @@
+#if canImport(UIKit)
+import SwiftUI
+import UIKit
+
+/// Values and views used to build your composer.
+public struct RecentPhotoPickerContext {
+    /// Whether the recent-photo interaction is open or closing.
+    public let isActive: Bool
+    /// Whether photo previews are loading.
+    public let isLoadingPhotos: Bool
+    /// Preview requests that did not complete.
+    public let photoLoadingFailures: [RecentPhotoLoadingFailure]
+    /// FanPicker's `+`/`X` button.
+    public let trigger: RecentPhotoTrigger
+
+    let attachmentNamespace: Namespace.ID
+    let attachmentTransition: AttachmentTransitionSession?
+    let configuration: FanPickerConfiguration
+    let onAttachmentDestinationReady: (UUID) -> Void
+
+    /// Returns `true` while an attachment flight is being prepared or running.
+    public func isTransitioningAttachment(id: UUID) -> Bool {
+        attachmentTransition?.id == id
+    }
+
+    func isStagingAttachment(id: UUID) -> Bool {
+        attachmentTransition?.id == id
+            && attachmentTransition?.phase == .staged
+    }
+
+    func attachmentDestinationReady(id: UUID) {
+        onAttachmentDestinationReady(id)
+    }
+}
+
+/// Adds the recent-photo interaction to your composer.
+@MainActor
+public struct RecentPhotoQuickPicker<Composer: View>: View {
+    private let configuration: FanPickerConfiguration
+    private let onTapTrigger: () -> Void
+    private let onPhotoLoading: () -> Void
+    private let onPhotoAccessUnavailable: (RecentPhotoSource.AccessState) -> Void
+    private let isSelectionAllowed: (RecentPhotoAsset) -> Bool
+    private let onSelect: (RecentPhotoSelection) -> Void
+    private let composer: (RecentPhotoPickerContext) -> Composer
+
+    @State private var source: RecentPhotoSource
+    @State private var controller = FanPickerController()
+    @State private var attachmentTransition: AttachmentTransitionSession?
+    @State private var permissionRequestID: UUID?
+    @State private var photoLoadingFeedbackToken = 0
+    @State private var resolvedGeometry = ResolvedFanPickerGeometry()
+    @Namespace private var attachmentNamespace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// Creates a recent-photo picker around your composer.
+    ///
+    /// - Parameters:
+    ///   - configuration: Sizes, timing values, and image policy.
+    ///   - source: Photo source. Pass `nil` to use the system photo library.
+    ///   - onTapTrigger: Runs when the closed `+` button is tapped.
+    ///   - onPhotoLoading: Runs when a hold occurs before previews are ready.
+    ///   - onPhotoAccessUnavailable: Runs when photo access is denied or
+    ///     restricted.
+    ///   - isSelectionAllowed: Decides whether an asset can be selected.
+    ///   - onSelect: Runs after selection. Add the value to your attachment
+    ///     model immediately.
+    ///   - composer: Builds the composer with FanPicker's context.
+    public init(
+        configuration: FanPickerConfiguration = .reference,
+        source: RecentPhotoSource? = nil,
+        onTapTrigger: @escaping () -> Void = {},
+        onPhotoLoading: @escaping () -> Void = {},
+        onPhotoAccessUnavailable: @escaping (
+            RecentPhotoSource.AccessState
+        ) -> Void = { _ in },
+        isSelectionAllowed: @escaping (RecentPhotoAsset) -> Bool = { _ in true },
+        onSelect: @escaping (RecentPhotoSelection) -> Void,
+        @ViewBuilder composer: @escaping (RecentPhotoPickerContext) -> Composer
+    ) {
+        self.configuration = configuration
+        self.onTapTrigger = onTapTrigger
+        self.onPhotoLoading = onPhotoLoading
+        self.onPhotoAccessUnavailable = onPhotoAccessUnavailable
+        self.isSelectionAllowed = isSelectionAllowed
+        self.onSelect = onSelect
+        self.composer = composer
+        _source = State(initialValue: source ?? RecentPhotoSource())
+    }
+
+    public var body: some View {
+        composer(context)
+            .overlayPreferenceValue(FanPickerTriggerAnchorKey.self) { anchor in
+                GeometryReader { proxy in
+                    let geometry = resolve(anchor: anchor, proxy: proxy)
+
+                    ZStack {
+                        if let presentation = overlayPresentation, geometry.isValid {
+                            RecentFanOverlay(
+                                presentation: presentation,
+                                configuration: configuration,
+                                attachmentNamespace: attachmentNamespace,
+                                attachmentTransition: attachmentTransition,
+                                globalOrigin: geometry.composerRect.origin,
+                                reduceMotion: reduceMotion,
+                                committingAssetID: committingAssetID,
+                                onTapAsset: commit
+                            )
+                            .transition(revealTransition)
+                        }
+                        if voiceOverEnabled,
+                           let presentation = controller.presentation,
+                           geometry.isValid {
+                            RecentPhotoAccessibilityOverlay(
+                                presentation: presentation,
+                                configuration: configuration,
+                                globalOrigin: geometry.composerRect.origin,
+                                onSelect: commit
+                            )
+                        }
+                    }
+                    .onAppear {
+                        updateGeometry(geometry)
+                    }
+                    .onChange(of: geometry) { _, next in
+                        updateGeometry(next)
+                    }
+                }
+            }
+            .sensoryFeedback(
+                .impact(weight: .light, intensity: 0.7),
+                trigger: controller.revealFeedbackToken
+            )
+            .sensoryFeedback(
+                .selection,
+                trigger: controller.hoverFeedbackToken
+            )
+            .sensoryFeedback(
+                .impact(weight: .light, intensity: 0.45),
+                trigger: photoLoadingFeedbackToken
+            )
+            .task {
+                await source.preload(
+                    configuration: configuration,
+                    displayScale: displayScale
+                )
+            }
+            .onChange(of: scenePhase) { _, next in
+                if next == .active {
+                    Task {
+                        await source.preload(
+                            configuration: configuration,
+                            displayScale: displayScale
+                        )
+                    }
+                } else {
+                    cancelTransientState()
+                    source.cancelLoading()
+                }
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: UIApplication.didReceiveMemoryWarningNotification
+                )
+            ) { _ in
+                source.clearCachedImages()
+            }
+            .onDisappear {
+                cancelTransientState()
+                source.cancelLoading()
+            }
+    }
+
+    private var context: RecentPhotoPickerContext {
+        RecentPhotoPickerContext(
+            isActive: controller.isActive,
+            isLoadingPhotos: source.isLoading,
+            photoLoadingFailures: source.loadingFailures,
+            trigger: RecentPhotoTrigger(
+                isActive: controller.showsCloseTrigger,
+                configuration: configuration,
+                onRecognized: beginInteraction,
+                onDrag: { point in
+                    controller.updateHover(at: point, configuration: configuration)
+                },
+                onRelease: finishInteraction,
+                onTap: handleTriggerTap,
+                onAccessibilityReveal: beginInteraction
+            ),
+            attachmentNamespace: attachmentNamespace,
+            attachmentTransition: attachmentTransition,
+            configuration: configuration,
+            onAttachmentDestinationReady: attachmentDestinationReady
+        )
+    }
+
+    private func beginInteraction() {
+        guard attachmentTransition == nil else { return }
+
+        guard source.canReveal else {
+            if source.isLoading {
+                photoLoadingFeedbackToken += 1
+                onPhotoLoading()
+                return
+            }
+
+            guard permissionRequestID == nil else { return }
+            let requestID = UUID()
+            permissionRequestID = requestID
+
+            Task { @MainActor in
+                await source.prepareForUserAction(
+                    configuration: configuration,
+                    displayScale: displayScale
+                )
+                guard permissionRequestID == requestID else { return }
+                permissionRequestID = nil
+
+                switch source.accessState {
+                case .restricted, .denied:
+                    onPhotoAccessUnavailable(source.accessState)
+                case .notDetermined, .authorized, .limited:
+                    break
+                }
+            }
+            return
+        }
+
+        if reduceMotion {
+            withAnimation(.smooth(duration: 0.12)) {
+                controller.begin(
+                    assets: source.revealAssets,
+                    configuration: configuration,
+                    reduceMotion: true
+                )
+            }
+        } else {
+            controller.begin(
+                assets: source.revealAssets,
+                configuration: configuration
+            )
+        }
+    }
+
+    private func finishInteraction() {
+        guard let selection = controller.releaseSelection() else { return }
+        commit(selection)
+    }
+
+    private func commit(_ selection: RecentPhotoAsset) {
+        guard isSelectionAllowed(selection),
+              attachmentTransition == nil,
+              let sourcePresentation = controller.frozenPresentation() else {
+            return
+        }
+        let photoSelection = RecentPhotoSelection(asset: selection)
+        let transition = AttachmentTransitionSession(
+            id: photoSelection.id,
+            assetID: selection.id,
+            asset: selection,
+            sourcePresentation: sourcePresentation,
+            sourceSize: configuration.recentSize * selectedVisualScale,
+            sourceCornerRadius: configuration.recentCornerRadius
+                * selectedVisualScale
+        )
+
+        selection.beginImageFreeze()
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            attachmentTransition = transition
+            onSelect(photoSelection)
+        }
+    }
+
+    private func attachmentDestinationReady(_ attachmentID: UUID) {
+        guard let transition = attachmentTransition,
+              transition.id == attachmentID,
+              transition.phase == .staged else {
+            return
+        }
+
+        Task { @MainActor in
+            await Task.yield()
+            prepareAttachmentFlight(sessionID: transition.id)
+        }
+    }
+
+    private func prepareAttachmentFlight(sessionID: UUID) {
+        guard let transition = attachmentTransition,
+              transition.id == sessionID,
+              transition.phase == .staged else {
+            return
+        }
+
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            attachmentTransition = transition.preparingFlight()
+        }
+
+        Task { @MainActor in
+            await Task.yield()
+            beginAttachmentFlight(sessionID: sessionID)
+        }
+    }
+
+    private func beginAttachmentFlight(sessionID: UUID) {
+        guard let transition = attachmentTransition,
+              transition.id == sessionID,
+              transition.phase == .prepared else {
+            return
+        }
+        let flyingTransition = transition.startingFlight()
+
+        withAnimation(
+            flightAnimation,
+            completionCriteria: .logicallyComplete
+        ) {
+            attachmentTransition = flyingTransition
+            controller.commitSelection()
+        } completion: {
+            guard attachmentTransition?.id == transition.id else { return }
+            transition.asset.endImageFreeze()
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                attachmentTransition = nil
+            }
+        }
+    }
+
+    private func handleTriggerTap() {
+        if controller.isActive {
+            if reduceMotion {
+                withAnimation(.smooth(duration: 0.12)) {
+                    controller.cancelImmediately()
+                }
+            } else {
+                controller.dismiss(configuration: configuration)
+            }
+        } else {
+            onTapTrigger()
+        }
+    }
+
+    private var flightAnimation: Animation {
+        if reduceMotion {
+            .smooth(duration: 0.12)
+        } else {
+            .spring(
+                duration: configuration.flightDuration,
+                bounce: configuration.flightBounce
+            )
+        }
+    }
+
+    private var selectedVisualScale: CGFloat {
+        reduceMotion
+            ? min(configuration.hoverScale, 1.04)
+            : configuration.hoverScale
+    }
+
+    private var overlayPresentation: FanPickerController.Presentation? {
+        attachmentTransition?.sourcePresentation ?? controller.presentation
+    }
+
+    private var committingAssetID: String? {
+        guard attachmentTransition?.phase == .flying else { return nil }
+        return attachmentTransition?.assetID
+    }
+
+    private var revealTransition: AnyTransition {
+        guard reduceMotion else { return .identity }
+        return .opacity.combined(with: .scale(scale: 0.96, anchor: .bottomLeading))
+    }
+
+    private func updateGeometry(_ geometry: ResolvedFanPickerGeometry) {
+        let changedDuringInteraction = resolvedGeometry.isValid
+            && geometry.isValid
+            && resolvedGeometry.differs(from: geometry)
+            && controller.isActive
+            && attachmentTransition == nil
+
+        resolvedGeometry = geometry
+        controller.updateGeometry(geometry)
+        if !geometry.isValid || changedDuringInteraction {
+            cancelTransientState()
+        }
+    }
+
+    private func cancelTransientState() {
+        permissionRequestID = nil
+        controller.cancelImmediately()
+        attachmentTransition?.asset.endImageFreeze()
+        attachmentTransition = nil
+    }
+
+    private func resolve(
+        anchor: Anchor<CGRect>?,
+        proxy: GeometryProxy
+    ) -> ResolvedFanPickerGeometry {
+        ResolvedFanPickerGeometry(
+            composerRect: proxy.frame(in: .global),
+            triggerRect: anchor.map {
+                let localRect = proxy[$0]
+                let globalOrigin = proxy.frame(in: .global).origin
+                return localRect.offsetBy(
+                    dx: globalOrigin.x,
+                    dy: globalOrigin.y
+                )
+            } ?? .zero
+        )
+    }
+}
+#endif
