@@ -30,3 +30,6 @@ Local.xcconfig
 
 # Private reference demo
 /Example/FanPickerDemo/
+
+# Local implementation notes
+/.local-notes/
