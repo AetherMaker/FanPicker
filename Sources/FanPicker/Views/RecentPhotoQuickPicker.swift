@@ -42,6 +42,7 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
     private let onPhotoAccessUnavailable: (RecentPhotoSource.AccessState) -> Void
     private let isSelectionAllowed: (RecentPhotoAsset) -> Bool
     private let onSelect: (RecentPhotoSelection) -> Void
+    private let onScrollLockChanged: (Bool) -> Void
     private let composer: (RecentPhotoPickerContext) -> Composer
 
     @State private var source: RecentPhotoSource
@@ -49,6 +50,7 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
     @State private var attachmentTransition: AttachmentTransitionSession?
     @State private var permissionRequestID: UUID?
     @State private var photoLoadingFeedbackToken = 0
+    @State private var isTriggerPressed = false
     @State private var resolvedGeometry = ResolvedFanPickerGeometry()
     @Namespace private var attachmentNamespace
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -68,6 +70,8 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
     ///   - isSelectionAllowed: Decides whether an asset can be selected.
     ///   - onSelect: Runs after selection. Add the value to your attachment
     ///     model immediately.
+    ///   - onScrollLockChanged: Reports whether the host scroll view should be
+    ///     disabled.
     ///   - composer: Builds the composer with FanPicker's context.
     public init(
         configuration: FanPickerConfiguration = .reference,
@@ -79,6 +83,7 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
         ) -> Void = { _ in },
         isSelectionAllowed: @escaping (RecentPhotoAsset) -> Bool = { _ in true },
         onSelect: @escaping (RecentPhotoSelection) -> Void,
+        onScrollLockChanged: @escaping (Bool) -> Void = { _ in },
         @ViewBuilder composer: @escaping (RecentPhotoPickerContext) -> Composer
     ) {
         self.configuration = configuration
@@ -87,6 +92,7 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
         self.onPhotoAccessUnavailable = onPhotoAccessUnavailable
         self.isSelectionAllowed = isSelectionAllowed
         self.onSelect = onSelect
+        self.onScrollLockChanged = onScrollLockChanged
         self.composer = composer
         _source = State(initialValue: source ?? RecentPhotoSource())
     }
@@ -142,6 +148,9 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
                 .impact(weight: .light, intensity: 0.45),
                 trigger: photoLoadingFeedbackToken
             )
+            .onChange(of: isScrollLocked) { _, isLocked in
+                onScrollLockChanged(isLocked)
+            }
             .task {
                 await source.preload(
                     configuration: configuration,
@@ -169,6 +178,7 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
                 source.clearCachedImages()
             }
             .onDisappear {
+                onScrollLockChanged(false)
                 cancelTransientState()
                 source.cancelLoading()
             }
@@ -188,6 +198,7 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
                 },
                 onRelease: finishInteraction,
                 onTap: handleTriggerTap,
+                onPressChanged: { isTriggerPressed = $0 },
                 onAccessibilityReveal: beginInteraction
             ),
             attachmentNamespace: attachmentNamespace,
@@ -371,6 +382,10 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
     private var committingAssetID: String? {
         guard attachmentTransition?.phase == .flying else { return nil }
         return attachmentTransition?.assetID
+    }
+
+    private var isScrollLocked: Bool {
+        isTriggerPressed || controller.isActive || attachmentTransition != nil
     }
 
     private var revealTransition: AnyTransition {
