@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var draft = ""
     @State private var showingPhotoAccessAlert = false
     @State private var showingTapHelp = false
+    @State private var isScrollLocked = false
     @FocusState private var isInputFocused: Bool
 
     var body: some View {
@@ -17,13 +18,20 @@ struct ContentView: View {
                     isInputFocused = false
                 }
 
-            VStack(spacing: 8) {
-                Text("FanPicker")
-                    .font(.title.bold())
+            ScrollView {
+                VStack(spacing: 8) {
+                    Text("FanPicker")
+                        .font(.title.bold())
 
-                Text("Hold + to choose a recent photo")
-                    .foregroundStyle(.secondary)
+                    Text("Hold + to choose a recent photo")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 96)
             }
+            .scrollBounceBehavior(.always)
+            .scrollDismissesKeyboard(.interactively)
+            .scrollDisabled(isScrollLocked)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             RecentPhotoQuickPicker(
@@ -35,6 +43,9 @@ struct ContentView: View {
                 },
                 onSelect: { selection in
                     attachments.append(selection)
+                },
+                onScrollLockChanged: { isLocked in
+                    isScrollLocked = isLocked
                 }
             ) { picker in
                 DemoComposer(

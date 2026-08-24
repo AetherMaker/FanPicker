@@ -7,9 +7,21 @@ struct DemoComposer: View {
     let picker: RecentPhotoPickerContext
     let isInputFocused: FocusState<Bool>.Binding
 
-    private let configuration = FanPickerConfiguration.reference
-
     var body: some View {
+        composerContent
+            .fanPickerBlur(
+                context: picker,
+                clippedTo: composerShape
+            ) {
+                composerShape.fill(.regularMaterial)
+            }
+            .overlay(alignment: .bottomLeading) {
+                picker.trigger
+                    .padding(10)
+            }
+    }
+
+    private var composerContent: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !attachments.isEmpty {
                 AttachmentStrip(
@@ -17,19 +29,17 @@ struct DemoComposer: View {
                     picker: picker,
                     onRemove: remove
                 )
-                .blur(radius: picker.isActive ? configuration.composerBlurRadius : 0)
-                .opacity(picker.isActive ? configuration.composerBlurOpacity : 1)
             }
 
             HStack(spacing: 8) {
-                picker.trigger
+                Color.clear
+                    .frame(width: 40, height: 40)
+                    .accessibilityHidden(true)
 
                 TextField("Message", text: $draft)
                     .focused(isInputFocused)
                     .submitLabel(.send)
                     .onSubmit(send)
-                    .blur(radius: picker.isActive ? configuration.composerBlurRadius : 0)
-                    .opacity(picker.isActive ? configuration.composerBlurOpacity : 1)
 
                 Button(action: send) {
                     Image(systemName: "arrow.up")
@@ -40,13 +50,13 @@ struct DemoComposer: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .blur(radius: picker.isActive ? configuration.composerBlurRadius : 0)
-                .opacity(picker.isActive ? configuration.composerBlurOpacity : 1)
             }
         }
         .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .animation(.smooth(duration: 0.12), value: picker.isActive)
+    }
+
+    private var composerShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
     }
 
     private func remove(_ id: UUID) {

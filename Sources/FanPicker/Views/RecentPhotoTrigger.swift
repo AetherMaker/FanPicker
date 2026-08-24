@@ -9,9 +9,11 @@ public struct RecentPhotoTrigger: View {
     let onDrag: (CGPoint) -> Void
     let onRelease: () -> Void
     let onTap: () -> Void
+    let onPressChanged: (Bool) -> Void
     let onAccessibilityReveal: () -> Void
 
     @State private var didRecognizeHold = false
+    @GestureState private var isPressed = false
 
     public var body: some View {
         Button(action: handleTap) {
@@ -26,6 +28,10 @@ public struct RecentPhotoTrigger: View {
         .buttonStyle(.plain)
         .fanPickerTriggerAnchor()
         .simultaneousGesture(triggerGesture)
+        .simultaneousGesture(pressTrackingGesture)
+        .onChange(of: isPressed) { _, isPressed in
+            onPressChanged(isPressed)
+        }
         .accessibilityLabel(isActive ? "Close recent photos" : "Add attachment")
         .accessibilityHint(
             isActive
@@ -75,6 +81,13 @@ public struct RecentPhotoTrigger: View {
                     await Task.yield()
                     didRecognizeHold = false
                 }
+            }
+    }
+
+    private var pressTrackingGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .updating($isPressed) { _, isPressed, _ in
+                isPressed = true
             }
     }
 
