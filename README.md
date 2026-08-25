@@ -14,7 +14,7 @@ Add this package in Xcode, or add it to `Package.swift`:
 ```swift
 .package(
     url: "https://github.com/AetherMaker/FanPicker.git",
-    from: "0.2.0"
+    from: "0.2.1"
 )
 ```
 
@@ -77,16 +77,13 @@ struct ChatView: View {
                     }
 
                     HStack {
-                        Color.clear.frame(width: 40, height: 40)
+                        picker.trigger
                         TextField("Message", text: $draft)
                     }
                 }
                 .padding(10)
                 .fanPickerBlur(context: picker, clippedTo: shape) {
                     shape.fill(.regularMaterial)
-                }
-                .overlay(alignment: .bottomLeading) {
-                    picker.trigger.padding(10)
                 }
             }
         }
@@ -96,11 +93,11 @@ struct ChatView: View {
 }
 ```
 
-`picker.trigger` is FanPicker's `+`/`X` button. Place it where the attachment button belongs. Tapping it calls `onTapTrigger`; holding it opens recent photos. Use `onTapTrigger` to open your app's attachment menu or any other action.
+`picker.trigger` marks where FanPicker renders its `+`/`X` button. Place it where the attachment button belongs. FanPicker keeps the live control sharp and interactive above the composer blur. Tapping it calls `onTapTrigger`; holding it opens recent photos. Use `onTapTrigger` to open your app's attachment menu or any other action.
 
 Use `onScrollLockChanged` with the host scroll view. Normal scrolling and interactive keyboard dismissal remain enabled while FanPicker is closed.
 
-`fanPickerBlur` blurs the composer as one layer while the picker is open. Keep `picker.trigger` above that layer so it stays sharp and interactive.
+`fanPickerBlur` blurs the composer as one layer while the picker is open. FanPicker renders the live trigger above that layer automatically.
 
 Your app creates and positions the destination attachment view. Apply `fanPickerAttachmentTransition(id:context:)` to that view, as shown above. FanPicker connects it to the selected thumbnail and runs the hero animation. You do not need to add `matchedGeometryEffect` yourself.
 
@@ -109,6 +106,10 @@ For uploads, use `loadImageData()` or `exportResource(to:)`. `asset.image` is th
 ## Demo
 
 Open [Examples/FanPickerDemo/FanPickerDemo.xcodeproj](Examples/FanPickerDemo/FanPickerDemo.xcodeproj), select your own signing team, and run the app.
+
+## Version 0.2.1
+
+The live `+`/`X` trigger stays sharp and interactive while the composer is blurred.
 
 ## Version 0.2
 
