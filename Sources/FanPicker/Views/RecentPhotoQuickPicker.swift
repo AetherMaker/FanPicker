@@ -10,7 +10,7 @@ public struct RecentPhotoPickerContext {
     public let isLoadingPhotos: Bool
     /// Preview requests that did not complete.
     public let photoLoadingFailures: [RecentPhotoLoadingFailure]
-    /// FanPicker's `+`/`X` button.
+    /// Marks where FanPicker renders its `+`/`X` button.
     public let trigger: RecentPhotoTrigger
 
     let attachmentNamespace: Namespace.ID
@@ -127,6 +127,16 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
                                 onSelect: commit
                             )
                         }
+                        if geometry.isValid {
+                            triggerControl
+                                .position(
+                                    x: geometry.triggerRect.midX
+                                        - geometry.composerRect.minX,
+                                    y: geometry.triggerRect.midY
+                                        - geometry.composerRect.minY
+                                )
+                                .zIndex(1_000)
+                        }
                     }
                     .onAppear {
                         updateGeometry(geometry)
@@ -189,23 +199,28 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
             isActive: controller.isActive,
             isLoadingPhotos: source.isLoading,
             photoLoadingFailures: source.loadingFailures,
-            trigger: RecentPhotoTrigger(
-                isActive: controller.showsCloseTrigger,
-                configuration: configuration,
-                onRecognized: beginInteraction,
-                onDrag: { point in
-                    controller.updateHover(at: point, configuration: configuration)
-                },
-                onRelease: finishInteraction,
-                onTap: handleTriggerTap,
-                onPressChanged: { isTriggerPressed = $0 },
-                onAccessibilityReveal: beginInteraction
-            ),
+            trigger: RecentPhotoTrigger(),
             attachmentNamespace: attachmentNamespace,
             attachmentTransition: attachmentTransition,
             configuration: configuration,
             onAttachmentDestinationReady: attachmentDestinationReady
         )
+    }
+
+    private var triggerControl: some View {
+        RecentPhotoTriggerControl(
+            isActive: controller.showsCloseTrigger,
+            configuration: configuration,
+            onRecognized: beginInteraction,
+            onDrag: { point in
+                controller.updateHover(at: point, configuration: configuration)
+            },
+            onRelease: finishInteraction,
+            onTap: handleTriggerTap,
+            onPressChanged: { isTriggerPressed = $0 },
+            onAccessibilityReveal: beginInteraction
+        )
+        .allowsHitTesting(attachmentTransition == nil)
     }
 
     private func beginInteraction() {

@@ -15,10 +15,6 @@ struct DemoComposer: View {
             ) {
                 composerShape.fill(.regularMaterial)
             }
-            .overlay(alignment: .bottomLeading) {
-                picker.trigger
-                    .padding(10)
-            }
     }
 
     private var composerContent: some View {
@@ -32,9 +28,7 @@ struct DemoComposer: View {
             }
 
             HStack(spacing: 8) {
-                Color.clear
-                    .frame(width: 40, height: 40)
-                    .accessibilityHidden(true)
+                picker.trigger
 
                 TextField("Message", text: $draft)
                     .focused(isInputFocused)

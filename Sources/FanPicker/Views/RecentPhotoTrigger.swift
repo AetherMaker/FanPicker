@@ -1,8 +1,25 @@
 #if canImport(UIKit)
 import SwiftUI
 
-/// FanPicker's `+`/`X` button and its tap, hold, and drag gestures.
+enum RecentPhotoTriggerMetrics {
+    static let size: CGFloat = 40
+}
+
+/// Marks the position of FanPicker's `+`/`X` button.
 public struct RecentPhotoTrigger: View {
+    public var body: some View {
+        Color.clear
+            .frame(
+                width: RecentPhotoTriggerMetrics.size,
+                height: RecentPhotoTriggerMetrics.size
+            )
+            .fanPickerTriggerAnchor()
+            .accessibilityHidden(true)
+    }
+}
+
+/// FanPicker's `+`/`X` button and its tap, hold, and drag gestures.
+struct RecentPhotoTriggerControl: View {
     let isActive: Bool
     let configuration: FanPickerConfiguration
     let onRecognized: () -> Void
@@ -15,18 +32,20 @@ public struct RecentPhotoTrigger: View {
     @State private var didRecognizeHold = false
     @GestureState private var isPressed = false
 
-    public var body: some View {
+    var body: some View {
         Button(action: handleTap) {
             Image(systemName: "plus")
                 .font(.system(size: 22, weight: .medium))
                 .foregroundStyle(.primary)
-                .frame(width: 40, height: 40)
+                .frame(
+                    width: RecentPhotoTriggerMetrics.size,
+                    height: RecentPhotoTriggerMetrics.size
+                )
                 .contentShape(Rectangle())
                 .rotationEffect(.degrees(isActive ? 45 : 0))
                 .animation(.smooth(duration: 0.16), value: isActive)
         }
         .buttonStyle(.plain)
-        .fanPickerTriggerAnchor()
         .simultaneousGesture(triggerGesture)
         .simultaneousGesture(pressTrackingGesture)
         .onChange(of: isPressed) { _, isPressed in

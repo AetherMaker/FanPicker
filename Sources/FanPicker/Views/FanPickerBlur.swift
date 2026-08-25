@@ -4,8 +4,8 @@ import SwiftUI
 public extension View {
     /// Blurs composer content while the recent-photo picker is active.
     ///
-    /// Keep ``RecentPhotoPickerContext/trigger`` outside this layer so it
-    /// remains sharp and interactive.
+    /// Place ``RecentPhotoPickerContext/trigger`` inside the composer where
+    /// the button belongs. FanPicker renders the live control above this layer.
     ///
     /// - Parameters:
     ///   - context: The context provided by ``RecentPhotoQuickPicker``.
