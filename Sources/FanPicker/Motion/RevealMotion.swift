@@ -48,13 +48,11 @@ struct RevealMotionTimeline {
             )
         }
 
-        let itemDuration = configuration.revealDuration
-            + Double(max(index, 0)) * configuration.revealItemStagger
-        if time >= itemDuration {
+        if time >= itemDuration(index: index) {
             return RevealMotionValue(center: destination, scale: 1, opacity: 1)
         }
 
-        let timeline = makeTimeline(
+        let timeline = revealTimeline(
             source: source,
             destination: destination,
             index: index
@@ -62,9 +60,44 @@ struct RevealMotionTimeline {
         return timeline.value(time: min(max(time, 0), timeline.duration))
     }
 
+    func itemDuration(index: Int) -> TimeInterval {
+        configuration.revealDuration
+            + Double(max(index, 0)) * configuration.revealItemStagger
+    }
+
     func duration(itemCount: Int) -> TimeInterval {
         configuration.revealDuration
             + Double(max(itemCount - 1, 0)) * configuration.revealItemStagger
+    }
+
+    func trailingPeekValue(
+        destination: CGPoint,
+        fanItemCount: Int,
+        time: TimeInterval
+    ) -> RevealMotionValue {
+        let revealDuration = duration(itemCount: fanItemCount)
+        let startTime = revealDuration * 0.46
+        guard time > startTime, revealDuration > startTime else {
+            return RevealMotionValue(
+                center: CGPoint(x: destination.x + 12, y: destination.y),
+                scale: 0.96,
+                opacity: 0
+            )
+        }
+
+        let progress = min(
+            max((time - startTime) / (revealDuration - startTime), 0),
+            1
+        )
+        let eased = progress * progress * (3 - 2 * progress)
+        return RevealMotionValue(
+            center: CGPoint(
+                x: destination.x + 12 * (1 - eased),
+                y: destination.y
+            ),
+            scale: 0.96 + 0.04 * eased,
+            opacity: eased
+        )
     }
 
     func dismissalValue(
@@ -87,7 +120,7 @@ struct RevealMotionTimeline {
             )
         }
 
-        let timeline = makeDismissalTimeline(
+        let timeline = dismissalTimeline(
             from: start,
             source: source,
             destination: destination,
@@ -100,7 +133,7 @@ struct RevealMotionTimeline {
         itemCount > 0 ? configuration.dismissalDuration : 0
     }
 
-    private func makeTimeline(
+    func revealTimeline(
         source: CGPoint,
         destination: CGPoint,
         index: Int
@@ -108,8 +141,8 @@ struct RevealMotionTimeline {
         let safeIndex = max(index, 0)
         let stagger = Double(safeIndex) * configuration.revealItemStagger
         let launchDuration = configuration.revealDuration * 0.20
-        let spreadDuration = configuration.revealDuration * 0.25
-        let anticipationDuration = configuration.revealDuration * 0.16
+        let spreadDuration = configuration.revealDuration * 0.23
+        let anticipationDuration = configuration.revealDuration * 0.12
         let settleDuration = configuration.revealDuration
             - launchDuration
             - spreadDuration
@@ -129,7 +162,11 @@ struct RevealMotionTimeline {
             )
         ) {
             KeyframeTrack(\.center) {
-                LinearKeyframe(waypoints.launch, duration: launchDuration)
+                CubicKeyframe(
+                    waypoints.launch,
+                    duration: launchDuration,
+                    startVelocity: .zero
+                )
                 CubicKeyframe(waypoints.spread, duration: spreadDuration)
                 CubicKeyframe(
                     waypoints.anticipation,
@@ -163,11 +200,11 @@ struct RevealMotionTimeline {
             }
 
             KeyframeTrack(\.opacity) {
-                LinearKeyframe(0.82, duration: launchDuration * 0.45)
-                LinearKeyframe(1, duration: launchDuration * 0.55)
+                LinearKeyframe(1, duration: launchDuration * 0.25)
                 LinearKeyframe(
                     1,
-                    duration: spreadDuration
+                    duration: launchDuration * 0.75
+                        + spreadDuration
                         + anticipationDuration
                         + settleDuration
                 )
@@ -175,7 +212,7 @@ struct RevealMotionTimeline {
         }
     }
 
-    private func makeDismissalTimeline(
+    func dismissalTimeline(
         from start: RevealMotionValue,
         source: CGPoint,
         destination: CGPoint,
@@ -290,7 +327,7 @@ struct RevealMotionTimeline {
     }
 
     private var horizontalOvershoot: CGFloat {
-        min(max(configuration.recentSpacing * 0.8, 6), 10)
+        min(max(configuration.recentSpacing * 0.3, 2), 4)
     }
 
     private func interpolate(

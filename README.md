@@ -101,6 +101,11 @@ Use `onScrollLockChanged` with the host scroll view. Normal scrolling and intera
 
 Your app creates and positions the destination attachment view. Apply `fanPickerAttachmentTransition(id:context:)` to that view, as shown above. FanPicker connects it to the selected thumbnail and runs the hero animation. You do not need to add `matchedGeometryEffect` yourself.
 
+Two rules keep that hero animation intact:
+
+- In `onSelect`, animate your composer's growth if you want, but never the insertion of the attachment cell. A view that enters with a transition loses its matched geometry and jumps instead of flying.
+- The photo flies in from the row above the composer. Any clipping of your own has to open while `picker.isAttachingPhoto` is `true`, or it cuts the photo's top edge mid-flight. `fanPickerBlur` handles this for the shape you pass it.
+
 For uploads, use `loadImageData()` or `exportResource(to:)`. `asset.image` is the display preview.
 
 ## Demo
