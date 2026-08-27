@@ -134,6 +134,25 @@ struct RecentPhotoSourceTests {
         #expect(source.loadingFailures == [failure])
     }
 
+    @Test("A slow preview does not block the scrolling reveal")
+    @MainActor
+    func slowPreviewDoesNotBlockScrollingReveal() async {
+        let client = makeClient(ids: ["one", "two", "three", "four"])
+        let source = RecentPhotoSource(libraryClient: client)
+        let configuration = FanPickerConfiguration(
+            scrolling: FanPickerScrollingConfiguration()
+        )
+
+        await source.preload(configuration: configuration)
+        #expect(!source.canReveal)
+
+        client.send(.image(UIImage(), .final), for: "one")
+        client.send(.completed(nil), for: "one")
+
+        #expect(source.canReveal)
+        #expect(source.revealAssets.count == 4)
+    }
+
     @Test("Local-only loading exposes a cloud download requirement")
     @MainActor
     func localOnlyCloudFailure() async {
@@ -180,6 +199,29 @@ struct RecentPhotoSourceTests {
         #expect(client.previewRequestIDs == ["one"])
     }
 
+    @Test("Scrolling sources request previews around the visible window")
+    @MainActor
+    func scrollingSourceLoadsLazily() async {
+        let ids = (0..<12).map { "asset-\($0)" }
+        let client = makeClient(ids: ids)
+        let source = RecentPhotoSource(libraryClient: client)
+        var configuration = FanPickerConfiguration.reference
+        configuration.scrolling = FanPickerScrollingConfiguration(
+            assetLimit: 20,
+            prefetchDistance: 3
+        )
+
+        await source.preload(configuration: configuration)
+
+        #expect(client.fetchLimits == [20])
+        #expect(client.previewRequestIDs == Array(ids.prefix(7)))
+
+        source.prepareAssets(near: 8)
+
+        #expect(client.previewRequestIDs == ids)
+        #expect(client.cacheRequests.last?.identifiers == Array(ids[5...11]))
+    }
+
     @Test("Photo library changes reload the latest assets")
     @MainActor
     func libraryChangesReloadAssets() async throws {
@@ -192,7 +234,10 @@ struct RecentPhotoSourceTests {
             RecentPhotoLibraryAssetDescriptor(id: "two", creationDate: nil),
         ]
         client.notifyLibraryChange()
-        try await Task.sleep(for: .milliseconds(200))
+        // Poll because the reload is debounced.
+        for _ in 0..<40 where client.fetchLimits.count < 2 {
+            try await Task.sleep(for: .milliseconds(50))
+        }
 
         #expect(client.fetchLimits.count == 2)
         #expect(source.assets.map(\.id) == ["two"])

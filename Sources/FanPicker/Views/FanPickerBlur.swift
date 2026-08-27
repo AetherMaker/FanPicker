@@ -20,7 +20,8 @@ public extension View {
             content: self,
             background: background(),
             clipShape: clipShape,
-            isActive: context.isActive,
+            isActive: context.isActive && context.attachmentTransition == nil,
+            isTransitioningAttachment: context.isAttachingPhoto,
             configuration: context.configuration
         )
     }
@@ -35,13 +36,20 @@ private struct FanPickerBlurLayer<
     let background: Background
     let clipShape: ClipShape
     let isActive: Bool
+    let isTransitioningAttachment: Bool
     let configuration: FanPickerConfiguration
 
     var body: some View {
         content
             .opacity(isActive ? configuration.composerBlurOpacity : 1)
-            .background(background)
-            .clipShape(clipShape)
+            // Keep the background clipped while the content clip opens.
+            .background(background.clipShape(clipShape))
+            .clipShape(
+                ComposerContentClip(
+                    base: clipShape,
+                    isOpen: isTransitioningAttachment
+                )
+            )
             .compositingGroup()
             .blur(radius: isActive ? configuration.composerBlurRadius : 0)
             .overlay {
@@ -53,7 +61,31 @@ private struct FanPickerBlurLayer<
                 }
             }
             .accessibilityHidden(isActive)
-            .animation(.smooth(duration: 0.09), value: isActive)
+            // Remove the blur before the attachment starts flying.
+            .animation(
+                isTransitioningAttachment ? nil : .smooth(duration: 0.09),
+                value: isActive
+            )
     }
+}
+
+/// Opens the composer's top edge for the attachment flight.
+private struct ComposerContentClip<Base: Shape>: Shape {
+    let base: Base
+    let isOpen: Bool
+
+    func path(in rect: CGRect) -> Path {
+        guard isOpen else { return base.path(in: rect) }
+        return Rectangle().path(
+            in: CGRect(
+                x: rect.minX,
+                y: rect.minY - Self.flightHeadroom,
+                width: rect.width,
+                height: rect.height + Self.flightHeadroom
+            )
+        )
+    }
+
+    private static var flightHeadroom: CGFloat { 600 }
 }
 #endif

@@ -1,8 +1,48 @@
 import CoreGraphics
 
+/// Controls the optional scrolling recent-photo row.
+public struct FanPickerScrollingConfiguration: Sendable, Equatable {
+    /// Maximum number of recent assets available to the row.
+    public var assetLimit: Int
+    /// Number of thumbnails prepared beyond the visible range.
+    public var prefetchDistance: Int
+    /// Maximum number of photos kept in the pinned leading stack.
+    public var stackDepth: Int
+    /// Width of each edge auto-scroll zone, in points.
+    public var edgeActivationWidth: CGFloat
+    /// Fastest edge auto-scroll speed, in points per second.
+    public var maximumEdgeScrollSpeed: CGFloat
+
+    public init(
+        assetLimit: Int = 40,
+        prefetchDistance: Int = 8,
+        stackDepth: Int = 3,
+        edgeActivationWidth: CGFloat = 64,
+        maximumEdgeScrollSpeed: CGFloat = 360
+    ) {
+        self.assetLimit = assetLimit
+        self.prefetchDistance = prefetchDistance
+        self.stackDepth = stackDepth
+        self.edgeActivationWidth = edgeActivationWidth
+        self.maximumEdgeScrollSpeed = maximumEdgeScrollSpeed
+    }
+}
+
+extension FanPickerScrollingConfiguration {
+    var resolvedAssetLimit: Int { max(assetLimit, 0) }
+    var resolvedPrefetchDistance: Int { max(prefetchDistance, 0) }
+    var resolvedStackDepth: Int { max(stackDepth, 1) }
+    var resolvedEdgeActivationWidth: CGFloat { max(edgeActivationWidth, 1) }
+    var resolvedMaximumEdgeScrollSpeed: CGFloat {
+        max(maximumEdgeScrollSpeed, 0)
+    }
+}
+
 /// Sizes and timing values used by FanPicker.
 public struct FanPickerConfiguration: Sendable {
-    /// Maximum number of recent photos shown.
+    /// Number of photos in the initial fan.
+    ///
+    /// A scrolling row can expose more photos after it settles.
     public var itemCount: Int
 
     /// Seconds before a hold opens the picker.
@@ -65,6 +105,8 @@ public struct FanPickerConfiguration: Sendable {
     public var closeBadgeSize: CGFloat
     /// Preview loading and network policy.
     public var imagePolicy: RecentPhotoImagePolicy
+    /// Enables lazy horizontal browsing when non-`nil`.
+    public var scrolling: FanPickerScrollingConfiguration?
 
     /// Creates a configuration. Default values match ``reference``.
     public init(
@@ -76,7 +118,7 @@ public struct FanPickerConfiguration: Sendable {
         recentCornerRadius: CGFloat = 14,
         rowToControlGap: CGFloat = 8,
         revealItemStagger: Double = 0.018,
-        revealDuration: Double = 0.38,
+        revealDuration: Double = 0.42,
         revealApex: CGFloat = 32,
         revealInitialScale: CGFloat = 0.42,
         revealPeakScale: CGFloat = 1.018,
@@ -94,7 +136,8 @@ public struct FanPickerConfiguration: Sendable {
         flightDuration: Double = 0.22,
         flightBounce: Double = 0.10,
         closeBadgeSize: CGFloat = 21,
-        imagePolicy: RecentPhotoImagePolicy = .production
+        imagePolicy: RecentPhotoImagePolicy = .production,
+        scrolling: FanPickerScrollingConfiguration? = nil
     ) {
         self.itemCount = itemCount
         self.holdDuration = holdDuration
@@ -123,6 +166,7 @@ public struct FanPickerConfiguration: Sendable {
         self.flightBounce = flightBounce
         self.closeBadgeSize = closeBadgeSize
         self.imagePolicy = imagePolicy
+        self.scrolling = scrolling
     }
 
     /// Values tuned for the reference interaction.

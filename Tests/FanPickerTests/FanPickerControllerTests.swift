@@ -119,6 +119,31 @@ struct FanPickerControllerTests {
         controller.cancelImmediately()
     }
 
+    @Test("A visible trailing peek participates in the scrolling reveal")
+    @MainActor
+    func scrollingRevealIncludesTrailingPeek() {
+        let controller = makeController()
+        let assets = (0..<8).map { index in
+            RecentPhotoAsset(id: "scrolling-asset-\(index)", image: UIImage())
+        }
+        var scrollingConfiguration = configuration
+        scrollingConfiguration.scrolling = FanPickerScrollingConfiguration()
+
+        controller.begin(
+            assets: assets,
+            configuration: scrollingConfiguration,
+            now: startDate
+        )
+
+        guard case let .revealing(session, _) = controller.state else {
+            Issue.record("Expected an active reveal")
+            return
+        }
+        #expect(session.revealItemCount == 4)
+        #expect(session.revealMotionItemCount == 5)
+        controller.cancelImmediately()
+    }
+
     @Test("Commit clears the reveal synchronously")
     @MainActor
     func commitsToIdle() {

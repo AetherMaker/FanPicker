@@ -10,14 +10,15 @@ struct RecentPhotoAccessibilityOverlay: View {
     var body: some View {
         let session = presentation.session
         let destinations = session.geometry.recentRects(
-            count: session.assets.count,
+            count: session.revealItemCount,
             configuration: configuration
         )
 
         ZStack {
-            ForEach(Array(session.assets.enumerated()), id: \.element.id) {
-                index,
-                asset in
+            ForEach(
+                Array(session.assets.prefix(session.revealItemCount).enumerated()),
+                id: \.element.id
+            ) { index, asset in
                 if destinations.indices.contains(index) {
                     Button {
                         onSelect(asset)

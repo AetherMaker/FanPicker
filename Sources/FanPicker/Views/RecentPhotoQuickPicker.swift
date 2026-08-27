@@ -23,6 +23,12 @@ public struct RecentPhotoPickerContext {
         attachmentTransition?.id == id
     }
 
+    /// Whether a selected photo is flying into the composer.
+    /// Open custom composer clipping while this is `true`.
+    public var isAttachingPhoto: Bool {
+        attachmentTransition != nil
+    }
+
     func isStagingAttachment(id: UUID) -> Bool {
         attachmentTransition?.id == id
             && attachmentTransition?.phase == .staged
@@ -52,6 +58,7 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
     @State private var photoLoadingFeedbackToken = 0
     @State private var isTriggerPressed = false
     @State private var resolvedGeometry = ResolvedFanPickerGeometry()
+    @State private var scrollingRow = ScrollableRecentRowController()
     @Namespace private var attachmentNamespace
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
@@ -69,7 +76,7 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
     ///     restricted.
     ///   - isSelectionAllowed: Decides whether an asset can be selected.
     ///   - onSelect: Runs after selection. Add the value to your attachment
-    ///     model immediately.
+    ///     model immediately without animating the cell insertion.
     ///   - onScrollLockChanged: Reports whether the host scroll view should be
     ///     disabled.
     ///   - composer: Builds the composer with FanPicker's context.
@@ -113,9 +120,16 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
                                 globalOrigin: geometry.composerRect.origin,
                                 reduceMotion: reduceMotion,
                                 committingAssetID: committingAssetID,
-                                onTapAsset: commit
+                                scrollingRow: scrollingRow,
+                                onTapAsset: commit,
+                                onVisibleIndexChanged: source.prepareAssets
                             )
                             .transition(revealTransition)
+                            .onAppear {
+                                controller.syncRevealClock(
+                                    configuration: configuration
+                                )
+                            }
                         }
                         if voiceOverEnabled,
                            let presentation = controller.presentation,
@@ -157,6 +171,10 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
             .sensoryFeedback(
                 .impact(weight: .light, intensity: 0.45),
                 trigger: photoLoadingFeedbackToken
+            )
+            .sensoryFeedback(
+                .impact(weight: .light, intensity: 0.5),
+                trigger: scrollingRow.stackFeedbackToken
             )
             .onChange(of: isScrollLocked) { _, isLocked in
                 onScrollLockChanged(isLocked)
@@ -213,7 +231,7 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
             configuration: configuration,
             onRecognized: beginInteraction,
             onDrag: { point in
-                controller.updateHover(at: point, configuration: configuration)
+                updateHoldDrag(at: point)
             },
             onRelease: finishInteraction,
             onTap: handleTriggerTap,
@@ -269,9 +287,11 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
                 configuration: configuration
             )
         }
+        configureScrollingRow()
     }
 
     private func finishInteraction() {
+        scrollingRow.stopEdgeTracking()
         guard let selection = controller.releaseSelection() else { return }
         commit(selection)
     }
@@ -298,8 +318,9 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             attachmentTransition = transition
-            onSelect(photoSelection)
         }
+        // Keep host layout animation outside the matched-geometry transaction.
+        onSelect(photoSelection)
     }
 
     private func attachmentDestinationReady(_ attachmentID: UUID) {
@@ -355,15 +376,23 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
             transaction.disablesAnimations = true
             withTransaction(transaction) {
                 attachmentTransition = nil
+                scrollingRow.reset()
             }
         }
     }
 
     private func handleTriggerTap() {
         if controller.isActive {
+            if let session = controller.presentation?.session {
+                scrollingRow.prepareDismissal(
+                    revealItemCount: session.revealMotionItemCount,
+                    usesCurrentLayout: controller.isOpen
+                )
+            }
             if reduceMotion {
                 withAnimation(.smooth(duration: 0.12)) {
                     controller.cancelImmediately()
+                    scrollingRow.reset()
                 }
             } else {
                 controller.dismiss(configuration: configuration)
@@ -417,6 +446,7 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
 
         resolvedGeometry = geometry
         controller.updateGeometry(geometry)
+        configureScrollingRow()
         if !geometry.isValid || changedDuringInteraction {
             cancelTransientState()
         }
@@ -427,6 +457,62 @@ public struct RecentPhotoQuickPicker<Composer: View>: View {
         controller.cancelImmediately()
         attachmentTransition?.asset.endImageFreeze()
         attachmentTransition = nil
+        scrollingRow.reset()
+    }
+
+    private func configureScrollingRow() {
+        guard configuration.scrolling != nil,
+              attachmentTransition == nil,
+              let session = controller.presentation?.session,
+              resolvedGeometry.isValid else {
+            return
+        }
+        scrollingRow.configure(
+            sessionID: session.id,
+            geometry: resolvedGeometry,
+            assetCount: session.assets.count,
+            configuration: configuration
+        )
+        if let layout = scrollingRow.layout {
+            source.prepareAssets(
+                near: layout.trailingVisibleIndex(offset: scrollingRow.offset)
+            )
+        }
+    }
+
+    private func updateHoldDrag(at point: CGPoint) {
+        if configuration.scrolling != nil,
+           controller.isOpen,
+           let session = controller.presentation?.session {
+            // Do not select a card moving under a stationary finger.
+            let assetID = scrollingRow.isAutoScrolling
+                ? nil
+                : scrollingRow.hitTest(
+                    point: point,
+                    currentID: controller.presentation?.highlightedID,
+                    assets: session.assets,
+                    configuration: configuration
+                )
+            controller.updateHover(assetID: assetID)
+        } else {
+            controller.updateHover(at: point, configuration: configuration)
+        }
+
+        guard configuration.scrolling != nil else { return }
+        scrollingRow.updateEdgeLocation(
+            point,
+            canScroll: { controller.isOpen },
+            onScroll: { _ in
+                controller.updateHover(assetID: nil)
+                if let layout = scrollingRow.layout {
+                    source.prepareAssets(
+                        near: layout.trailingVisibleIndex(
+                            offset: scrollingRow.offset
+                        )
+                    )
+                }
+            }
+        )
     }
 
     private func resolve(

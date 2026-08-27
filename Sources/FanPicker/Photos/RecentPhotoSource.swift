@@ -36,7 +36,10 @@ public final class RecentPhotoSource {
     private let backend: Backend
     private let libraryClient: (any RecentPhotoLibraryClient)?
     private var loadGeneration = UUID()
+    private var assetDescriptors: [RecentPhotoLibraryAssetDescriptor] = []
+    private var requestedAssetIDs: Set<String> = []
     private var pendingAssetIDs: Set<String> = []
+    private var cachedRange: Range<Int>?
     private var lastConfiguration: FanPickerConfiguration?
     private var lastDisplayScale: CGFloat = 1
     private var libraryChangeTask: Task<Void, Never>?
@@ -80,7 +83,9 @@ public final class RecentPhotoSource {
     public var loadingFailures: [RecentPhotoLoadingFailure] {
         assets.compactMap(\.loadingFailure)
     }
+}
 
+extension RecentPhotoSource {
     /// Loads previews when photo access is already available.
     ///
     /// This method does not request permission.
@@ -92,6 +97,8 @@ public final class RecentPhotoSource {
         configuration: FanPickerConfiguration,
         displayScale: CGFloat = 1
     ) async {
+        lastConfiguration = configuration
+        lastDisplayScale = displayScale
         guard case .photoLibrary = backend, let libraryClient else { return }
         isSuspended = false
         accessState = Self.mapAccess(libraryClient.accessState)
@@ -113,6 +120,8 @@ public final class RecentPhotoSource {
         configuration: FanPickerConfiguration,
         displayScale: CGFloat = 1
     ) async {
+        lastConfiguration = configuration
+        lastDisplayScale = displayScale
         guard case .photoLibrary = backend, let libraryClient else { return }
         isSuspended = false
         accessState = Self.mapAccess(await libraryClient.requestAuthorization())
@@ -135,29 +144,23 @@ public final class RecentPhotoSource {
     ) async {
         guard case .photoLibrary = backend, let libraryClient else { return }
 
-        lastConfiguration = configuration
-        lastDisplayScale = displayScale
-        isLoading = true
-        loadGeneration = UUID()
-        let generation = loadGeneration
-        libraryClient.cancelPreviewRequests()
-        pendingAssetIDs.removeAll()
-        let fetchedAssets = libraryClient.fetchRecentAssets(
-            limit: configuration.itemCount
+        let generation = beginReload(
+            configuration: configuration,
+            displayScale: displayScale,
+            libraryClient: libraryClient
         )
+        let fetchedAssets = libraryClient.fetchRecentAssets(
+            limit: configuration.scrolling?.resolvedAssetLimit
+                ?? configuration.itemCount
+        )
+        assetDescriptors = fetchedAssets
 
         let targetSize = Self.previewTargetSize(
             configuration: configuration,
             displayScale: displayScale
         )
 
-        libraryClient.replaceCachedAssets(
-            with: fetchedAssets.map(\.id),
-            targetSize: targetSize,
-            policy: configuration.imagePolicy
-        )
-
-        let placeholder = placeholderImage(size: targetSize)
+        let placeholder = RecentPhotoPlaceholder.image(size: targetSize)
         let loaded = fetchedAssets.map { asset in
             RecentPhotoAsset(
                 id: asset.id,
@@ -171,13 +174,103 @@ public final class RecentPhotoSource {
             )
         }
         assets = loaded
-        pendingAssetIDs = Set(fetchedAssets.map(\.id))
-        guard !pendingAssetIDs.isEmpty else {
+        guard !fetchedAssets.isEmpty else {
             isLoading = false
             return
         }
 
-        for (photoAsset, displayAsset) in zip(fetchedAssets, loaded) {
+        let initialCount = min(
+            fetchedAssets.count,
+            max(
+                configuration.itemCount
+                    + (configuration.scrolling?.resolvedPrefetchDistance ?? 0),
+                configuration.itemCount
+            )
+        )
+        requestPreviews(
+            in: 0..<initialCount,
+            generation: generation,
+            configuration: configuration,
+            targetSize: targetSize
+        )
+    }
+
+    func prepareAssets(near index: Int) {
+        guard case .photoLibrary = backend,
+              let configuration = lastConfiguration,
+              let scrolling = configuration.scrolling,
+              !assetDescriptors.isEmpty else {
+            return
+        }
+
+        let safeIndex = min(max(index, 0), assetDescriptors.count - 1)
+        let lowerBound = max(safeIndex - scrolling.resolvedPrefetchDistance, 0)
+        let upperBound = min(
+            safeIndex + scrolling.resolvedPrefetchDistance + 1,
+            assetDescriptors.count
+        )
+        let range = lowerBound..<upperBound
+        let targetSize = Self.previewTargetSize(
+            configuration: configuration,
+            displayScale: lastDisplayScale
+        )
+        updateCachedRange(
+            range,
+            targetSize: targetSize,
+            configuration: configuration
+        )
+        requestPreviews(
+            in: range,
+            generation: loadGeneration,
+            configuration: configuration,
+            targetSize: targetSize
+        )
+    }
+}
+
+private extension RecentPhotoSource {
+    func beginReload(
+        configuration: FanPickerConfiguration,
+        displayScale: CGFloat,
+        libraryClient: any RecentPhotoLibraryClient
+    ) -> UUID {
+        lastConfiguration = configuration
+        lastDisplayScale = displayScale
+        isLoading = true
+        loadGeneration = UUID()
+        libraryClient.cancelPreviewRequests()
+        assetDescriptors.removeAll()
+        requestedAssetIDs.removeAll()
+        pendingAssetIDs.removeAll()
+        cachedRange = nil
+        return loadGeneration
+    }
+
+    private func requestPreviews(
+        in range: Range<Int>,
+        generation: UUID,
+        configuration: FanPickerConfiguration,
+        targetSize: CGSize
+    ) {
+        guard let libraryClient else { return }
+        let safeRange = range.clamped(to: assetDescriptors.indices)
+        guard !safeRange.isEmpty else {
+            isLoading = !pendingAssetIDs.isEmpty
+            return
+        }
+
+        updateCachedRange(
+            safeRange,
+            targetSize: targetSize,
+            configuration: configuration
+        )
+
+        for index in safeRange {
+            let photoAsset = assetDescriptors[index]
+            guard requestedAssetIDs.insert(photoAsset.id).inserted else { continue }
+            let displayAsset = assets[index]
+            pendingAssetIDs.insert(photoAsset.id)
+            isLoading = true
             libraryClient.requestPreview(
                 for: photoAsset.id,
                 targetSize: targetSize,
@@ -203,8 +296,25 @@ public final class RecentPhotoSource {
                 }
             }
         }
+        isLoading = !pendingAssetIDs.isEmpty
     }
 
+    private func updateCachedRange(
+        _ range: Range<Int>,
+        targetSize: CGSize,
+        configuration: FanPickerConfiguration
+    ) {
+        guard cachedRange != range, let libraryClient else { return }
+        cachedRange = range
+        libraryClient.replaceCachedAssets(
+            with: range.map { assetDescriptors[$0].id },
+            targetSize: targetSize,
+            policy: configuration.imagePolicy
+        )
+    }
+}
+
+extension RecentPhotoSource {
     /// Cancels preview requests and automatic library reloads.
     public func cancelLoading() {
         guard case .photoLibrary = backend else { return }
@@ -212,7 +322,9 @@ public final class RecentPhotoSource {
         libraryChangeTask?.cancel()
         libraryChangeTask = nil
         loadGeneration = UUID()
+        requestedAssetIDs.removeAll()
         pendingAssetIDs.removeAll()
+        cachedRange = nil
         isLoading = false
         libraryClient?.cancelPreviewRequests()
     }
@@ -222,72 +334,9 @@ public final class RecentPhotoSource {
         guard case .photoLibrary = backend else { return }
         libraryClient?.clearCachedImages()
     }
+}
 
-    private func placeholderImage(size: CGSize) -> UIImage {
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        format.opaque = true
-
-        return UIGraphicsImageRenderer(size: size, format: format).image { context in
-            UIColor.secondarySystemBackground.setFill()
-            context.cgContext.fill(CGRect(origin: .zero, size: size))
-
-            let symbolSize = min(size.width, size.height) * 0.28
-            let configuration = UIImage.SymbolConfiguration(
-                pointSize: symbolSize,
-                weight: .regular
-            )
-            guard let symbol = UIImage(
-                systemName: "photo",
-                withConfiguration: configuration
-            )?.withTintColor(.tertiaryLabel, renderingMode: .alwaysOriginal) else {
-                return
-            }
-            symbol.draw(
-                at: CGPoint(
-                    x: (size.width - symbol.size.width) / 2,
-                    y: (size.height - symbol.size.height) / 2
-                )
-            )
-        }
-    }
-
-    static func mapAuthorization(
-        _ status: PHAuthorizationStatus
-    ) -> AccessState {
-        switch status {
-        case .notDetermined:
-            .notDetermined
-        case .restricted:
-            .restricted
-        case .denied:
-            .denied
-        case .authorized:
-            .authorized
-        case .limited:
-            .limited
-        @unknown default:
-            .denied
-        }
-    }
-
-    private static func mapAccess(
-        _ access: RecentPhotoLibraryAccess
-    ) -> AccessState {
-        switch access {
-        case .notDetermined:
-            .notDetermined
-        case .restricted:
-            .restricted
-        case .denied:
-            .denied
-        case .authorized:
-            .authorized
-        case .limited:
-            .limited
-        }
-    }
-
+private extension RecentPhotoSource {
     private func observeLibraryChanges() {
         libraryClient?.onLibraryChange = { [weak self] in
             self?.scheduleLibraryReload()
@@ -306,25 +355,32 @@ public final class RecentPhotoSource {
             )
         }
     }
+}
 
-    static func previewTargetSize(
-        configuration: FanPickerConfiguration,
-        displayScale: CGFloat
-    ) -> CGSize {
-        let recentDisplaySize = configuration.recentSize * max(
-            configuration.hoverScale,
-            configuration.revealPeakScale,
-            1
-        )
-        let pointSize = max(recentDisplaySize, configuration.attachmentSize)
-        let scale = max(displayScale, 1)
-        let overscan = max(configuration.imagePolicy.displayOverscan, 1)
-        let pixels = ceil(pointSize * scale * overscan)
-        return CGSize(width: pixels, height: pixels)
-    }
-
+extension RecentPhotoSource {
     var revealAssets: [RecentPhotoAsset] {
-        assets.filter(\.isDisplayReady)
+        guard let configuration = lastConfiguration,
+              configuration.scrolling != nil else {
+            return assets.filter(\.isDisplayReady)
+        }
+        let initialCount = min(max(configuration.itemCount, 0), assets.count)
+        // Do not let one slow preview block the initial fan.
+        guard initialCount > 0,
+              assets.prefix(initialCount).contains(where: \.isDisplayReady) else {
+            return []
+        }
+        return assets
+    }
+}
+
+private extension Range where Bound == Int {
+    func clamped(to bounds: Range<Int>) -> Range<Int> {
+        let lower = Swift.max(lowerBound, bounds.lowerBound)
+        let upper = Swift.max(
+            Swift.min(upperBound, bounds.upperBound),
+            lower
+        )
+        return lower..<upper
     }
 }
 #endif

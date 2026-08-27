@@ -5,40 +5,6 @@ import SwiftUI
 @MainActor
 @Observable
 final class FanPickerController {
-    struct RevealSession {
-        let id = UUID()
-        let startDate: Date
-        let assets: [RecentPhotoAsset]
-        let geometry: ResolvedFanPickerGeometry
-    }
-
-    struct DismissSession {
-        let reveal: RevealSession
-        let startDate: Date
-        let initialRevealElapsed: TimeInterval
-        let highlightedID: String?
-    }
-
-    enum PresentationPhase {
-        case revealing
-        case settled
-        case frozen(revealElapsed: TimeInterval)
-        case dismissing(startDate: Date, initialRevealElapsed: TimeInterval)
-    }
-
-    struct Presentation {
-        let session: RevealSession
-        let phase: PresentationPhase
-        let highlightedID: String?
-    }
-
-    enum State {
-        case idle
-        case revealing(RevealSession, highlightedID: String?)
-        case open(RevealSession, highlightedID: String?)
-        case dismissing(DismissSession)
-    }
-
     private(set) var state: State = .idle
     private(set) var revealFeedbackToken = 0
     private(set) var hoverFeedbackToken = 0
@@ -47,9 +13,15 @@ final class FanPickerController {
     private var geometry = ResolvedFanPickerGeometry()
     @ObservationIgnored
     private var settleTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var hasSyncedRevealClock = false
 
     var isActive: Bool {
         if case .idle = state { false } else { true }
+    }
+
+    var isOpen: Bool {
+        if case .open = state { true } else { false }
     }
 
     var showsCloseTrigger: Bool {
@@ -88,7 +60,9 @@ final class FanPickerController {
             )
         }
     }
+}
 
+extension FanPickerController {
     func updateGeometry(_ geometry: ResolvedFanPickerGeometry) {
         self.geometry = geometry
     }
@@ -101,18 +75,34 @@ final class FanPickerController {
     ) {
         guard case .idle = state, geometry.isValid, !assets.isEmpty else { return }
 
-        let visibleAssets = Array(assets.prefix(max(configuration.itemCount, 0)))
+        let assetLimit = configuration.scrolling?.resolvedAssetLimit
+            ?? configuration.itemCount
+        let visibleAssets = Array(assets.prefix(max(assetLimit, 0)))
         guard !visibleAssets.isEmpty else { return }
+        let frozenAssets = visibleAssets.filter(\.isDisplayReady)
 
+        let revealItemCount = min(
+            max(configuration.itemCount, 0),
+            visibleAssets.count
+        )
         let session = RevealSession(
             startDate: now,
             assets: visibleAssets,
+            frozenAssets: frozenAssets,
+            revealItemCount: revealItemCount,
+            revealMotionItemCount: FanPickerRevealGeometry.openingMotionItemCount(
+                geometry: geometry,
+                revealItemCount: revealItemCount,
+                assetCount: visibleAssets.count,
+                configuration: configuration
+            ),
             geometry: geometry
         )
         state = reduceMotion
             ? .open(session, highlightedID: nil)
             : .revealing(session, highlightedID: nil)
-        session.assets.forEach { $0.beginImageFreeze() }
+        hasSyncedRevealClock = false
+        frozenAssets.forEach { $0.beginImageFreeze() }
         revealFeedbackToken += 1
 
         settleTask?.cancel()
@@ -122,7 +112,7 @@ final class FanPickerController {
         }
 
         let duration = RevealMotionTimeline(configuration: configuration)
-            .duration(itemCount: visibleAssets.count)
+            .duration(itemCount: session.revealItemCount)
         settleTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(duration))
             guard !Task.isCancelled else { return }
@@ -130,6 +120,32 @@ final class FanPickerController {
         }
     }
 
+    // Start timing when the overlay can render, not when the hold is recognized.
+    func syncRevealClock(
+        configuration: FanPickerConfiguration,
+        now: Date = .now
+    ) {
+        guard case .revealing(var session, let highlightedID) = state,
+              !hasSyncedRevealClock else {
+            return
+        }
+        hasSyncedRevealClock = true
+        guard now > session.startDate else { return }
+
+        session.startDate = now
+        state = .revealing(session, highlightedID: highlightedID)
+        settleTask?.cancel()
+        let duration = RevealMotionTimeline(configuration: configuration)
+            .duration(itemCount: session.revealItemCount)
+        settleTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(duration))
+            guard !Task.isCancelled else { return }
+            self?.markRevealSettled(sessionID: session.id)
+        }
+    }
+}
+
+extension FanPickerController {
     func updateHover(
         at point: CGPoint,
         configuration: FanPickerConfiguration,
@@ -151,7 +167,7 @@ final class FanPickerController {
             return
         }
 
-        let rects = visualRects(
+        let rects = FanPickerRevealGeometry.visualRects(
             for: session,
             configuration: configuration,
             now: now,
@@ -186,6 +202,27 @@ final class FanPickerController {
             : .open(session, highlightedID: nextID)
         if nextID != nil {
             hoverFeedbackToken += 1
+        }
+    }
+
+    func updateHover(assetID: String?) {
+        switch state {
+        case let .revealing(session, currentID):
+            setHover(
+                assetID: assetID,
+                currentID: currentID,
+                session: session,
+                isRevealing: true
+            )
+        case let .open(session, currentID):
+            setHover(
+                assetID: assetID,
+                currentID: currentID,
+                session: session,
+                isRevealing: false
+            )
+        case .idle, .dismissing:
+            break
         }
     }
 
@@ -233,13 +270,15 @@ final class FanPickerController {
             )
         }
     }
+}
 
+extension FanPickerController {
     func commitSelection() {
         switch state {
         case let .revealing(session, _), let .open(session, _):
             settleTask?.cancel()
             settleTask = nil
-            session.assets.forEach { $0.endImageFreeze() }
+            session.frozenAssets.forEach { $0.endImageFreeze() }
             state = .idle
         case .idle, .dismissing:
             break
@@ -252,9 +291,9 @@ final class FanPickerController {
         case .idle:
             activeAssets = []
         case let .revealing(session, _), let .open(session, _):
-            activeAssets = session.assets
+            activeAssets = session.frozenAssets
         case let .dismissing(session):
-            activeAssets = session.reveal.assets
+            activeAssets = session.reveal.frozenAssets
         }
         settleTask?.cancel()
         settleTask = nil
@@ -278,7 +317,7 @@ final class FanPickerController {
             session = currentSession
             highlightedID = currentID
             revealDuration = RevealMotionTimeline(configuration: configuration)
-                .duration(itemCount: currentSession.assets.count)
+                .duration(itemCount: currentSession.revealItemCount)
             initialRevealElapsed = min(
                 max(now.timeIntervalSince(currentSession.startDate), 0),
                 revealDuration
@@ -287,7 +326,7 @@ final class FanPickerController {
             session = currentSession
             highlightedID = currentID
             revealDuration = RevealMotionTimeline(configuration: configuration)
-                .duration(itemCount: currentSession.assets.count)
+                .duration(itemCount: currentSession.revealItemCount)
             initialRevealElapsed = revealDuration
         }
 
@@ -301,14 +340,16 @@ final class FanPickerController {
             )
         )
         let dismissalDuration = RevealMotionTimeline(configuration: configuration)
-            .dismissalDuration(itemCount: session.assets.count)
+            .dismissalDuration(itemCount: session.revealItemCount)
         settleTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(dismissalDuration))
             guard !Task.isCancelled else { return }
             self?.finishDismissal(sessionID: session.id)
         }
     }
+}
 
+private extension FanPickerController {
     private func markRevealSettled(sessionID: UUID) {
         guard case let .revealing(session, highlightedID) = state,
               session.id == sessionID else {
@@ -323,45 +364,28 @@ final class FanPickerController {
               session.reveal.id == sessionID else {
             return
         }
-        session.reveal.assets.forEach { $0.endImageFreeze() }
+        session.reveal.frozenAssets.forEach { $0.endImageFreeze() }
         state = .idle
         settleTask = nil
     }
 
-    private func visualRects(
-        for session: RevealSession,
-        configuration: FanPickerConfiguration,
-        now: Date,
+    private func setHover(
+        assetID: String?,
+        currentID: String?,
+        session: RevealSession,
         isRevealing: Bool
-    ) -> [CGRect] {
-        let destinations = session.geometry.recentRects(
-            count: session.assets.count,
-            configuration: configuration
-        )
-        guard isRevealing else { return destinations }
-
-        let source = CGPoint(
-            x: session.geometry.triggerRect.midX,
-            y: session.geometry.triggerRect.midY
-        )
-        let elapsed = max(now.timeIntervalSince(session.startDate), 0)
-        let timeline = RevealMotionTimeline(configuration: configuration)
-
-        return destinations.enumerated().map { index, destination in
-            let motion = timeline.value(
-                source: source,
-                destination: CGPoint(x: destination.midX, y: destination.midY),
-                index: index,
-                time: elapsed
-            )
-            let size = configuration.recentSize * motion.scale
-            return CGRect(
-                x: motion.center.x - size / 2,
-                y: motion.center.y - size / 2,
-                width: size,
-                height: size
-            )
+    ) {
+        let nextID = session.assets.contains { $0.id == assetID }
+            ? assetID
+            : nil
+        guard nextID != currentID else { return }
+        state = isRevealing
+            ? .revealing(session, highlightedID: nextID)
+            : .open(session, highlightedID: nextID)
+        if nextID != nil {
+            hoverFeedbackToken += 1
         }
     }
+
 }
 #endif
