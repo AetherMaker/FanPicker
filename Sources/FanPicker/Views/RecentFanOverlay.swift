@@ -95,7 +95,7 @@ private struct FixedRecentFanOverlay: View {
                 }
             }
         }
-        .allowsHitTesting(context.allowsInteraction)
+        .allowsHitTesting(context.allowsSelection)
         .accessibilityHidden(true)
     }
 
@@ -122,7 +122,7 @@ private struct FixedRecentFanOverlay: View {
         let visualScale = motion.scale * context.hoverScale(for: asset)
 
         return Button {
-            guard context.allowsInteraction else { return }
+            guard context.allowsSelection, asset.isDisplayReady else { return }
             onTapAsset(asset)
         } label: {
             thumbnailLabel(
