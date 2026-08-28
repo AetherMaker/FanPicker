@@ -17,11 +17,22 @@ struct RecentFanOverlayContext {
         }
     }
 
-    var allowsInteraction: Bool {
+    // Selection can freeze the current reveal sample; scrolling requires
+    // stable, settled row geometry.
+    var allowsSelection: Bool {
         guard attachmentTransition == nil else { return false }
-        if case .settled = presentation.phase {
+
+        switch presentation.phase {
+        case .revealing, .settled:
             return true
+        case .frozen, .dismissing:
+            return false
         }
+    }
+
+    var allowsScrolling: Bool {
+        guard allowsSelection else { return false }
+        if case .settled = presentation.phase { return true }
         return false
     }
 

@@ -74,7 +74,7 @@ struct NativeScrollableRecentFanOverlay: View {
                     },
                     action: updateScrollOffset
                 )
-                .scrollDisabled(!context.allowsInteraction)
+                .scrollDisabled(!context.allowsScrolling)
                 .frame(
                     width: layout.viewport.width,
                     height: rowViewportHeight
@@ -100,7 +100,7 @@ struct NativeScrollableRecentFanOverlay: View {
                 }
             }
         }
-        .allowsHitTesting(context.allowsInteraction)
+        .allowsHitTesting(context.allowsSelection)
     }
 }
 
@@ -144,7 +144,7 @@ private extension NativeScrollableRecentFanOverlay {
             guard scrollingRow.allowsTap() else { return }
             if isStacked(index: index, layout: layout) {
                 scrollingRow.scrollToStart()
-            } else if context.allowsInteraction, asset.isDisplayReady {
+            } else if context.allowsSelection, asset.isDisplayReady {
                 onTapAsset(asset)
             }
         } label: {

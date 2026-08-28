@@ -94,7 +94,7 @@ private struct LegacyScrollableRecentFanOverlay: View {
             }
         }
         .simultaneousGesture(scrollGesture)
-        .allowsHitTesting(context.allowsInteraction)
+        .allowsHitTesting(context.allowsSelection)
         .accessibilityHidden(true)
         .onAppear(perform: reportVisibleIndex)
         .onChange(of: scrollingRow.offset) { _, _ in
@@ -122,7 +122,7 @@ private extension LegacyScrollableRecentFanOverlay {
             guard scrollingRow.allowsTap() else { return }
             if isStacked {
                 scrollingRow.scrollToStart()
-            } else if context.allowsInteraction, asset.isDisplayReady {
+            } else if context.allowsSelection, asset.isDisplayReady {
                 onTapAsset(asset)
             }
         } label: {
@@ -222,7 +222,7 @@ private extension LegacyScrollableRecentFanOverlay {
     private var scrollGesture: some Gesture {
         DragGesture(minimumDistance: 5, coordinateSpace: .global)
             .onChanged { value in
-                guard context.allowsInteraction else { return }
+                guard context.allowsScrolling else { return }
                 if !isDragging {
                     isDragging = true
                     scrollingRow.beginDrag()

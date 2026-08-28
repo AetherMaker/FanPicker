@@ -14,7 +14,7 @@ Add this package in Xcode, or add it to `Package.swift`:
 ```swift
 .package(
     url: "https://github.com/AetherMaker/FanPicker.git",
-    from: "0.2.1"
+    from: "0.3.1"
 )
 ```
 
@@ -111,6 +111,11 @@ For uploads, use `loadImageData()` or `exportResource(to:)`. `asset.image` is th
 ## Demo
 
 Open [Examples/FanPickerDemo/FanPickerDemo.xcodeproj](Examples/FanPickerDemo/FanPickerDemo.xcodeproj), select your own signing team, and run the app.
+
+## Version 0.3.1
+
+Photo thumbnails can be selected while the fan is still opening. Scrolling
+remains locked until the row settles.
 
 ## Version 0.2.1
 
